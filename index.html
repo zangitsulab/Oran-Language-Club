@@ -909,7 +909,7 @@ function tabMoments(){
 S.groups=[];S.students=[];
 var DAY=86400000,CYCLE=28*DAY;
 function rowToGroup(r){return {id:r.id,name:r.name,info:r.info||'',sort:r.sort||0}}
-function rowToStu(r){return {id:r.id,group:r.group_id,name:r.name,phone:r.phone||'',reg:!!r.reg_done,paidAt:r.paid_at?Date.parse(r.paid_at):null}}
+function rowToStu(r){return {id:r.id,group:r.group_id,name:r.name,phone:r.phone||'',reg:!!r.reg_done,paidAt:r.paid_at?Date.parse(r.paid_at):null,cycleStartAt:r.cycle_start_at?Date.parse(r.cycle_start_at):(r.paid_at?Date.parse(r.paid_at):null)}}
 async function loadStudents(){
   try{
     var r=await Promise.all([sb.from('student_groups').select('*').order('sort').order('created_at'),sb.from('students').select('*').order('created_at')]);
@@ -920,18 +920,31 @@ async function loadStudents(){
 function grp(id){return S.groups.filter(function(g){return g.id===id})[0]}
 function stu(id){return S.students.filter(function(s){return s.id===id})[0]}
 function dmy(ts){var d=new Date(ts);return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)+'/'+d.getFullYear()}
-/* a payment covers 4 weeks (28 days); after that the student is Unpaid again */
+/* A payment covers 4 weeks (28 days), counted from the selected cycle start date. */
 function payState(s){
-  if(!s.paidAt)return {paid:false,never:true};
-  var end=s.paidAt+CYCLE,now=Date.now();
-  if(now<end)return {paid:true,end:end,left:Math.ceil((end-now)/DAY)};
+  var start=s.cycleStartAt||s.paidAt;
+  if(!start)return {paid:false,never:true};
+  var end=start+CYCLE,now=Date.now();
+  if(now<end)return {paid:true,start:start,end:end,left:Math.ceil((end-now)/DAY)};
   return {paid:false,since:end};
+}
+function openPaymentDateModal(student){
+  var today=new Date(),value=today.getFullYear()+'-'+('0'+(today.getMonth()+1)).slice(-2)+'-'+('0'+today.getDate()).slice(-2);
+  M={paymentStudentId:student.id};
+  setDlg(dhead({icon:'book'},'Payment schedule','Set the payment period')
+    +'<form class="form" data-form="pay-start" data-id="'+esc(student.id)+'">'
+    +'<p class="muted">Choose the date from which this student’s 28-day payment period should be counted. This can be earlier or later than today.</p>'
+    +'<div><label class="lbl" for="pay-start-date">Payment period starts on</label><input class="inp" id="pay-start-date" name="cycle_start_at" type="date" value="'+value+'" required></div>'
+    +'<span class="err" id="pay-start-error" aria-live="polite"></span>'
+    +'<div class="fbtns"><button type="button" class="btn btn-line" data-a="close-modal">Cancel</button><button type="submit" class="btn btn-green">Record payment</button></div></form>');
+  openModal();
+  setTimeout(function(){var input=$('#pay-start-date');if(input)input.focus()},0);
 }
 function stuRow(s){
   var p=payState(s),sure=A.confirm==='stu:'+s.id;
   var reg='<button type="button" class="chip schip" data-a="stu-reg" data-id="'+s.id+'" aria-pressed="'+s.reg+'">'+(s.reg?'Complete':'Incomplete')+'</button>';
   var pay=p.paid
-    ?'<span class="pstat ok">Paid</span><span class="muted psub">on '+dmy(s.paidAt)+' · next due '+dmy(p.end)+' ('+p.left+(p.left===1?' day':' days')+' left)</span><button type="button" class="linkbtn" data-a="stu-unpay" data-id="'+s.id+'">Undo</button>'
+    ?'<span class="pstat ok">Paid</span><span class="muted psub">recorded '+dmy(s.paidAt)+' · cycle from '+dmy(p.start)+' · next due '+dmy(p.end)+' ('+p.left+(p.left===1?' day':' days')+' left)</span><button type="button" class="linkbtn" data-a="stu-unpay" data-id="'+s.id+'">Undo</button>'
     :'<span class="pstat bad">Unpaid</span><span class="muted psub">'+(p.never?'No payment recorded yet':'Month ended '+dmy(p.since))+'</span><button type="button" class="btn btn-green btn-sm" data-a="stu-paid" data-id="'+s.id+'">Mark as paid</button>';
   var others=S.groups.filter(function(g){return g.id!==s.group});
   var mv=others.length?'<select class="inp mvsel" data-mv="'+s.id+'" aria-label="Move '+esc(s.name)+' to another group"><option value="">Move to…</option>'+others.map(function(g){return '<option value="'+esc(g.id)+'">'+esc(g.name)+'</option>'}).join('')+'</select>':'';
@@ -1043,8 +1056,8 @@ document.addEventListener('click',function(e){
      else{A.confirm='grp:'+id;renderAdmin()}break}
    case 'stu-add-toggle':A.addStudent=(A.addStudent===id?null:id);A.addGroup=false;A.editGroup=null;renderAdmin();break;
    case 'stu-reg':{var sr=stu(id);if(sr){sr.reg=!sr.reg;rerender();sb.from('students').update({reg_done:sr.reg}).eq('id',id).then(function(x){if(x.error){sr.reg=!sr.reg;rerender();dbErr(x.error)}})}break}
-   case 'stu-paid':{var sp=stu(id);if(sp){var op=sp.paidAt;sp.paidAt=Date.now();rerender();sb.from('students').update({paid_at:new Date(sp.paidAt).toISOString()}).eq('id',id).then(function(x){if(x.error){sp.paidAt=op;rerender();dbErr(x.error)}else toast('Payment recorded')})}break}
-   case 'stu-unpay':{var su=stu(id);if(su){var ou=su.paidAt;su.paidAt=null;rerender();sb.from('students').update({paid_at:null}).eq('id',id).then(function(x){if(x.error){su.paidAt=ou;rerender();dbErr(x.error)}})}break}
+   case 'stu-paid':{var sp=stu(id);if(sp)openPaymentDateModal(sp);break}
+   case 'stu-unpay':{var su=stu(id);if(su){var ou=su.paidAt,oc=su.cycleStartAt;su.paidAt=null;su.cycleStartAt=null;rerender();sb.from('students').update({paid_at:null,cycle_start_at:null}).eq('id',id).then(function(x){if(x.error){su.paidAt=ou;su.cycleStartAt=oc;rerender();dbErr(x.error)}})}break}
    case 'stu-del':A.confirm='stu:'+id;renderAdmin();break;
    case 'stu-del-yes':sb.from('students').delete().eq('id',id).then(function(x){if(x.error)return dbErr(x.error);S.students=S.students.filter(function(y){return y.id!==id});A.confirm=null;rerender();toast('Student removed')});break;
    case 'mom-add':$('#mom-file').click();break;
@@ -1067,6 +1080,20 @@ document.addEventListener('submit',function(e){
       authed=true;await loadAll();rerender()})();
     return}
   var kind=f.dataset.form,id=f.dataset.id;
+  if(kind==='pay-start'){
+    var ps=$('#pay-start-date').value,student=stu(id);
+    if(!ps){$('#pay-start-error').textContent='Choose the date when the payment period starts.';return}
+    if(!student){closeModal();return}
+    var start=new Date(ps+'T00:00:00');
+    if(isNaN(start.getTime())){$('#pay-start-error').textContent='Choose a valid date.';return}
+    var recordedAt=Date.now(),oldPaid=student.paidAt,oldStart=student.cycleStartAt;
+    student.paidAt=recordedAt;student.cycleStartAt=start.getTime();
+    sb.from('students').update({paid_at:new Date(recordedAt).toISOString(),cycle_start_at:start.toISOString()}).eq('id',id).then(function(x){
+      if(x.error){student.paidAt=oldPaid;student.cycleStartAt=oldStart;dbErr(x.error);return}
+      closeModal();rerender();toast('Payment recorded');
+    });
+    return;
+  }
   if(kind==='grp'){var gn=$('#gf-n').value.trim(),gi=$('#gf-i').value.trim();
     if(!gn){$('#gf-e').textContent='Give the group a name.';return}
     if(id==='new'){var gso=S.groups.length?Math.max.apply(null,S.groups.map(function(q){return q.sort||0}))+1:0,ngr={id:uid(),name:gn,info:gi,sort:gso};
@@ -1076,7 +1103,7 @@ document.addEventListener('submit',function(e){
   if(kind==='stu'){var sn=$('#sf-n').value.trim(),spn=$('#sf-p').value.trim();
     if(sn.length<2){$('#sf-e').textContent='Enter the student\u2019s name.';return}
     var nst={id:uid(),group:id,name:sn,phone:spn,reg:false,paidAt:null};
-    sb.from('students').insert({id:nst.id,group_id:id,name:sn,phone:spn,reg_done:false,paid_at:null}).then(function(x){if(x.error)return dbErr(x.error);S.students.push(nst);A.addStudent=null;rerender();toast('Student added')});
+    sb.from('students').insert({id:nst.id,group_id:id,name:sn,phone:spn,reg_done:false,paid_at:null,cycle_start_at:null}).then(function(x){if(x.error)return dbErr(x.error);S.students.push(nst);A.addStudent=null;rerender();toast('Student added')});
     return}
   if(kind==='act'){var t=$('#af-t').value.trim(),w=$('#af-w').value.trim(),d=$('#af-d').value.trim();
     if(!t||!w){$('#af-e').textContent='Add a name and a day and time.';return}
